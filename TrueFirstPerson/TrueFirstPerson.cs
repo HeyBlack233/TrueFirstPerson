@@ -1,6 +1,5 @@
 using BepInEx;
 using BepInEx.Logging;
-using HarmonyLib;
 using Multiplayer;
 using System;
 using System.Collections.Generic;
@@ -821,16 +820,12 @@ namespace DouBai.PerspectiveSwitcher
         private const string TwilightTimerAssembly = "TwilightTimer";
         private const string FpsTagId = "FPS";
 
-        private static FieldInfo _tabDisplaysField;
-        private static FieldInfo _tabField;
-        private static int _baseTabCount = 3;
-
         public static bool Enabled { get; private set; }
 
         public static void TryInit()
         {
             RegisterFpsRuleWithAnyTimer();
-            TryPatchSettingsPanel();
+            TryRegisterSettingsTab();
         }
 
         // ── FPS tag rule (HSRTimer / TwilightTimer, reflection-based) ───────
@@ -925,101 +920,109 @@ namespace DouBai.PerspectiveSwitcher
             return tb.CreateType();
         }
 
-        // ── Settings panel integration (one timer panel; HSRTimer preferred) ─
+        // ── Settings panel tab (HSRTimer ISettingsPanelTab, reflection-based) ─
 
-        private static void TryPatchSettingsPanel()
-        {
-            if (Enabled) return;
-            TryPatchSettingsPanel(HSRTimerAssembly);
-            if (!Enabled)
-                TryPatchSettingsPanel(TwilightTimerAssembly);
-        }
-
-        private static void TryPatchSettingsPanel(string assemblyName)
+        private static void TryRegisterSettingsTab()
         {
             if (Enabled) return;
             try
             {
-                Type panelType = Type.GetType(assemblyName + ".SettingsPanel, " + assemblyName);
-                if (panelType == null) return;
-
-                var refresh = panelType.GetMethod("RefreshTabDisplays", BindingFlags.Instance | BindingFlags.NonPublic);
-                var draw = panelType.GetMethod("Draw", BindingFlags.Instance | BindingFlags.NonPublic);
-                _tabDisplaysField = panelType.GetField("_tabDisplays", BindingFlags.Instance | BindingFlags.NonPublic);
-                _tabField = panelType.GetField("_tab", BindingFlags.Instance | BindingFlags.NonPublic);
-                if (refresh == null || draw == null || _tabDisplaysField == null || _tabField == null)
+                Type interfaceType = Type.GetType("HSRTimer.ISettingsPanelTab, HSRTimer");
+                Type registryType = Type.GetType("HSRTimer.SettingsPanelTabRegistry, HSRTimer");
+                if (interfaceType == null || registryType == null)
                 {
-                    Plugin.Logger.LogWarning($"PerspectiveSwitcher: {assemblyName}.SettingsPanel shape mismatch; standalone settings UI stays available.");
+                    Plugin.Logger.LogInfo("PerspectiveSwitcher: HSRTimer settings-panel tab API not found; standalone settings UI stays available.");
                     return;
                 }
 
-                var keysField = panelType.GetField("_tabKeys", BindingFlags.Static | BindingFlags.NonPublic);
-                var keys = keysField != null ? keysField.GetValue(null) as string[] : null;
-                if (keys != null && keys.Length > 0)
-                    _baseTabCount = keys.Length;
+                var instanceProp = registryType.GetProperty("Instance", BindingFlags.Public | BindingFlags.Static);
+                if (instanceProp == null) return;
+                object registry = instanceProp.GetValue(null, null);
+                if (registry == null) return;
 
-                var harmony = new HarmonyLib.Harmony(PluginInfo.PLUGIN_GUID + "." + assemblyName);
-                harmony.Patch(refresh,
-                    postfix: new HarmonyLib.HarmonyMethod(typeof(TimerIntegration).GetMethod(
-                        "RefreshPostfix", BindingFlags.Static | BindingFlags.NonPublic)));
-                harmony.Patch(draw,
-                    transpiler: new HarmonyLib.HarmonyMethod(typeof(TimerIntegration).GetMethod(
-                        "DrawTranspiler", BindingFlags.Static | BindingFlags.NonPublic)));
+                var register = registryType.GetMethod("Register", new[] { typeof(string), interfaceType });
+                if (register == null)
+                {
+                    Plugin.Logger.LogWarning("PerspectiveSwitcher: HSRTimer.SettingsPanelTabRegistry.Register(string, ISettingsPanelTab) not found.");
+                    return;
+                }
 
-                Enabled = true;
-                Plugin.Logger.LogInfo($"PerspectiveSwitcher: settings page integrated into {assemblyName} settings panel (last tab).");
+                Type proxyType = BuildSettingsTabProxy(interfaceType);
+                object proxy = Activator.CreateInstance(proxyType);
+                object result = register.Invoke(registry, new[] { PluginInfo.PLUGIN_GUID, proxy });
+                if (result is bool ok && ok)
+                {
+                    Enabled = true;
+                    Plugin.Logger.LogInfo("PerspectiveSwitcher: settings page registered in HSRTimer settings panel via ISettingsPanelTab.");
+                }
+                else
+                {
+                    Plugin.Logger.LogWarning("PerspectiveSwitcher: HSRTimer rejected settings panel tab registration (duplicate or invalid plugin GUID?).");
+                }
             }
             catch (System.Exception ex)
             {
-                Plugin.Logger.LogWarning($"PerspectiveSwitcher: {assemblyName} settings panel integration failed: {ex.Message}");
+                Plugin.Logger.LogWarning($"PerspectiveSwitcher: HSRTimer settings panel tab registration failed: {ex.Message}");
             }
         }
 
-        private static void RefreshPostfix(object __instance)
+        private static Type BuildSettingsTabProxy(Type interfaceType)
         {
-            if (__instance == null || _tabDisplaysField == null) return;
-            var arr = _tabDisplaysField.GetValue(__instance) as string[];
-            if (arr == null || arr.Length != _baseTabCount) return;
-            Array.Resize(ref arr, _baseTabCount + 1);
-            arr[_baseTabCount] = L10n.T("PS_TITLE");
-            _tabDisplaysField.SetValue(__instance, arr);
-        }
+            var asmName = new AssemblyName("PerspectiveSwitcher.SettingsTabProxy." + interfaceType.Assembly.GetName().Name);
+            AssemblyBuilder ab = AppDomain.CurrentDomain.DefineDynamicAssembly(asmName, AssemblyBuilderAccess.Run);
+            ModuleBuilder mb = ab.DefineDynamicModule("SettingsTabProxyModule");
+            TypeBuilder tb = mb.DefineType("SettingsTabProxy",
+                TypeAttributes.Public | TypeAttributes.Sealed,
+                typeof(object), new[] { interfaceType });
 
-        private static IEnumerable<CodeInstruction> DrawTranspiler(IEnumerable<CodeInstruction> instructions)
-        {
-            var codes = new List<CodeInstruction>(instructions);
-            int switchIdx = -1;
-            for (int i = 0; i < codes.Count; i++)
+            MethodInfo[] methods = interfaceType.GetMethods();
+            for (int i = 0; i < methods.Length; i++)
             {
-                if (codes[i].opcode == OpCodes.Switch)
+                MethodInfo mi = methods[i];
+                ParameterInfo[] pars = mi.GetParameters();
+                Type[] paramTypes = new Type[pars.Length];
+                for (int p = 0; p < pars.Length; p++)
+                    paramTypes[p] = pars[p].ParameterType;
+
+                MethodBuilder method = tb.DefineMethod(
+                    mi.Name,
+                    MethodAttributes.Public | MethodAttributes.Virtual | MethodAttributes.Final | MethodAttributes.NewSlot,
+                    mi.ReturnType, paramTypes);
+
+                ILGenerator il = method.GetILGenerator();
+                if (mi.Name == "get_Title")
                 {
-                    switchIdx = i;
-                    break;
+                    MethodInfo bridge = typeof(SettingsTabBridge).GetMethod(
+                        "Title", BindingFlags.Public | BindingFlags.Static);
+                    il.Emit(OpCodes.Call, bridge);
+                    il.Emit(OpCodes.Ret);
                 }
+                else
+                {
+                    MethodInfo bridge = typeof(SettingsTabBridge).GetMethod(
+                        "Draw", BindingFlags.Public | BindingFlags.Static);
+                    il.Emit(OpCodes.Call, bridge);
+                    il.Emit(OpCodes.Ret);
+                }
+                tb.DefineMethodOverride(method, mi);
             }
-            if (switchIdx < 0) return codes;
 
-            var skip = new Label();
-            var drawMethod = typeof(TimerIntegration).GetMethod("DrawOurControls", BindingFlags.Static | BindingFlags.NonPublic);
-            var insert = new List<CodeInstruction>
-            {
-                new CodeInstruction(OpCodes.Ldarg_0),
-                new CodeInstruction(OpCodes.Ldfld, _tabField),
-                new CodeInstruction(OpCodes.Ldc_I4, _baseTabCount),
-                new CodeInstruction(OpCodes.Bne_Un_S, skip),
-                new CodeInstruction(OpCodes.Call, drawMethod),
-            };
-            if (codes[switchIdx].operand is int[] targets)
-            {
-                for (int i = 0; i < targets.Length; i++)
-                    if (targets[i] >= switchIdx) targets[i] += insert.Count;
-            }
-            codes[switchIdx].labels.Add(skip);
-            codes.InsertRange(switchIdx, insert);
-            return codes;
+            return tb.CreateType();
+        }
+    }
+
+    /// <summary>
+    /// Static bridge the runtime <c>ISettingsPanelTab</c> proxy delegates to.
+    /// Kept separate so the emitted proxy only has to call two static methods.
+    /// </summary>
+    public static class SettingsTabBridge
+    {
+        public static string Title()
+        {
+            return L10n.T("PS_TITLE");
         }
 
-        private static void DrawOurControls()
+        public static void Draw()
         {
             UiShared.EnsureStyles();
             UiShared.RebindCapture();
