@@ -1,0 +1,22 @@
+<Project>
+
+  <!--
+    Build references for TrueFirstPerson mirror HSRTimer: all game/BepInEx
+    DLL references resolve from the GAME_MANAGED (Human: Fall Flat Managed
+    folder) and BEPINEX_CORE (BepInEx core folder) properties. Override either
+    from the environment (same env vars HSRTimer uses) before invoking the
+    build, e.g.:
+
+      GAME_MANAGED=/path/to/Human_Fall_Flat/Human_Data/Managed \
+      BEPINEX_CORE=/path/to/Human_Fall_Flat/BepInEx/core \
+      dotnet build TrueFirstPerson.sln
+  -->
+  <PropertyGroup Condition=" '$(GAME_MANAGED)' == '' ">
+    <GAME_MANAGED>$(HOME)/Library/Application Support/Steam/steamapps/common/Human Fall Flat/Human.app/Contents/Resources/Data/Managed</GAME_MANAGED>
+  </PropertyGroup>
+
+  <PropertyGroup Condition=" '$(BEPINEX_CORE)' == '' ">
+    <BEPINEX_CORE>$(HOME)/Library/Application Support/Steam/steamapps/common/Human Fall Flat/BepInEx/core</BEPINEX_CORE>
+  </PropertyGroup>
+
+</Project>
