@@ -1,6 +1,5 @@
 using BepInEx;
 using BepInEx.Logging;
-using HarmonyLib;
 using Multiplayer;
 using System;
 using System.Collections.Generic;
@@ -39,6 +38,12 @@ namespace DouBai.PerspectiveSwitcher
             UnityEngine.Object.DontDestroyOnLoad(uiGo);
             uiGo.AddComponent<SettingsUi>();
             TimerIntegration.TryInit();
+        }
+
+        private void OnDestroy()
+        {
+            // Avoid a stale SettingsSaved delegate if the plugin is ever unloaded.
+            TimerIntegration.Unsubscribe();
         }
     }
 
@@ -309,6 +314,9 @@ namespace DouBai.PerspectiveSwitcher
 
         private void Update()
         {
+            // Retry pending timer tag-rule registration (plugin load order is
+            // not guaranteed) before anything else each frame.
+            TimerIntegration.Tick();
             UpdateTimerFpsRule();
 
             if (_mapHasOwnSwitcher) return;
@@ -821,16 +829,24 @@ namespace DouBai.PerspectiveSwitcher
         private const string TwilightTimerAssembly = "TwilightTimer";
         private const string FpsTagId = "FPS";
 
-        private static FieldInfo _tabDisplaysField;
-        private static FieldInfo _tabField;
-        private static int _baseTabCount = 3;
+        // The timer's TagRuleRegistry.Instance only exists after the timer's own
+        // Awake has run, and plugin load order is not guaranteed (BepInEx loads
+        // plugins in file-system order). If our Awake runs first, the 'FPS' rule
+        // registration is retried every frame for this window until it succeeds.
+        private const float FpsRuleRetryWindow = 10f;
+        private static readonly HashSet<string> _fpsRulePending = new HashSet<string>();
+        private static float _fpsRuleRetryDeadline;
 
         public static bool Enabled { get; private set; }
+
+        private static object _registry;
+        private static EventInfo _settingsSavedEvent;
+        private static Action _settingsSavedHandler;
 
         public static void TryInit()
         {
             RegisterFpsRuleWithAnyTimer();
-            TryPatchSettingsPanel();
+            TryRegisterSettingsPanel();
         }
 
         // ── FPS tag rule (HSRTimer / TwilightTimer, reflection-based) ───────
@@ -847,19 +863,41 @@ namespace DouBai.PerspectiveSwitcher
             {
                 Type ruleType = Type.GetType(assemblyName + ".ITagRule, " + assemblyName);
                 Type registryType = Type.GetType(assemblyName + ".TagRuleRegistry, " + assemblyName);
-                if (ruleType == null || registryType == null) return;
+                if (ruleType == null || registryType == null)
+                {
+                    // Timer not installed: nothing to register or retry.
+                    _fpsRulePending.Remove(assemblyName);
+                    return;
+                }
 
                 var instanceProp = registryType.GetProperty("Instance", BindingFlags.Public | BindingFlags.Static);
-                if (instanceProp == null) return;
+                if (instanceProp == null)
+                {
+                    _fpsRulePending.Remove(assemblyName);
+                    return;
+                }
                 object registry = instanceProp.GetValue(null, null);
-                if (registry == null) return;
+                if (registry == null)
+                {
+                    // The timer has not finished its own Awake yet (plugin load
+                    // order is not guaranteed); keep retrying for a short window.
+                    _fpsRulePending.Add(assemblyName);
+                    if (_fpsRuleRetryDeadline <= 0f)
+                        _fpsRuleRetryDeadline = Time.unscaledTime + FpsRuleRetryWindow;
+                    return;
+                }
 
                 var register = registryType.GetMethod("Register", new[] { ruleType });
-                if (register == null) return;
+                if (register == null)
+                {
+                    _fpsRulePending.Remove(assemblyName);
+                    return;
+                }
 
                 Type proxyType = BuildFpsRuleProxy(ruleType);
                 object proxy = Activator.CreateInstance(proxyType);
                 object result = register.Invoke(registry, new[] { proxy });
+                _fpsRulePending.Remove(assemblyName);
                 if (result is bool ok && ok)
                     Plugin.Logger.LogInfo($"PerspectiveSwitcher: registered '{FpsTagId}' tag rule with {assemblyName}.");
                 else
@@ -867,7 +905,29 @@ namespace DouBai.PerspectiveSwitcher
             }
             catch (System.Exception ex)
             {
+                _fpsRulePending.Remove(assemblyName);
                 Plugin.Logger.LogWarning($"PerspectiveSwitcher: failed to register '{FpsTagId}' tag rule with {assemblyName}: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Called every frame by <see cref="PerspectiveController.Update"/> while a
+        /// tag-rule registration is pending, so the 'FPS' rule still registers when
+        /// this plugin's Awake ran before the timer plugin's Awake.
+        /// </summary>
+        public static void Tick()
+        {
+            if (_fpsRulePending.Count == 0) return;
+            if (Time.unscaledTime > _fpsRuleRetryDeadline)
+            {
+                Plugin.Logger.LogWarning("PerspectiveSwitcher: could not register 'FPS' tag rule; timer registry never became available within the retry window.");
+                _fpsRulePending.Clear();
+                return;
+            }
+            foreach (var assemblyName in new[] { HSRTimerAssembly, TwilightTimerAssembly })
+            {
+                if (_fpsRulePending.Contains(assemblyName))
+                    TryRegisterFpsRule(assemblyName);
             }
         }
 
@@ -925,105 +985,183 @@ namespace DouBai.PerspectiveSwitcher
             return tb.CreateType();
         }
 
-        // ── Settings panel integration (one timer panel; HSRTimer preferred) ─
+        // ── Settings panel tab (HSRTimer / TwilightTimer ISettingsPanelTab,
+        //    reflection-based) ──────────────────────────────────────────────
 
-        private static void TryPatchSettingsPanel()
+        private static void TryRegisterSettingsPanel()
         {
             if (Enabled) return;
-            TryPatchSettingsPanel(HSRTimerAssembly);
+            TryRegisterSettingsPanel(HSRTimerAssembly);
             if (!Enabled)
-                TryPatchSettingsPanel(TwilightTimerAssembly);
+                TryRegisterSettingsPanel(TwilightTimerAssembly);
+            if (!Enabled)
+                Plugin.Logger.LogInfo("PerspectiveSwitcher: HSRTimer/TwilightTimer settings-panel tab API not found; standalone settings UI stays available.");
         }
 
-        private static void TryPatchSettingsPanel(string assemblyName)
+        private static void TryRegisterSettingsPanel(string assemblyName)
         {
             if (Enabled) return;
             try
             {
-                Type panelType = Type.GetType(assemblyName + ".SettingsPanel, " + assemblyName);
-                if (panelType == null) return;
-
-                var refresh = panelType.GetMethod("RefreshTabDisplays", BindingFlags.Instance | BindingFlags.NonPublic);
-                var draw = panelType.GetMethod("Draw", BindingFlags.Instance | BindingFlags.NonPublic);
-                _tabDisplaysField = panelType.GetField("_tabDisplays", BindingFlags.Instance | BindingFlags.NonPublic);
-                _tabField = panelType.GetField("_tab", BindingFlags.Instance | BindingFlags.NonPublic);
-                if (refresh == null || draw == null || _tabDisplaysField == null || _tabField == null)
+                Type interfaceType = Type.GetType(assemblyName + ".ISettingsPanelTab, " + assemblyName);
+                Type registryType = Type.GetType(assemblyName + ".SettingsPanelTabRegistry, " + assemblyName);
+                if (interfaceType == null || registryType == null)
                 {
-                    Plugin.Logger.LogWarning($"PerspectiveSwitcher: {assemblyName}.SettingsPanel shape mismatch; standalone settings UI stays available.");
+                    Plugin.Logger.LogInfo($"PerspectiveSwitcher: {assemblyName} settings-panel tab API not found; checking next timer.");
                     return;
                 }
 
-                var keysField = panelType.GetField("_tabKeys", BindingFlags.Static | BindingFlags.NonPublic);
-                var keys = keysField != null ? keysField.GetValue(null) as string[] : null;
-                if (keys != null && keys.Length > 0)
-                    _baseTabCount = keys.Length;
+                var instanceProp = registryType.GetProperty("Instance", BindingFlags.Public | BindingFlags.Static);
+                object registry = instanceProp != null ? instanceProp.GetValue(null, null) : null;
+                if (registry == null)
+                {
+                    Plugin.Logger.LogWarning($"PerspectiveSwitcher: {assemblyName} settings panel registry not available.");
+                    return;
+                }
 
-                var harmony = new HarmonyLib.Harmony(PluginInfo.PLUGIN_GUID + "." + assemblyName);
-                harmony.Patch(refresh,
-                    postfix: new HarmonyLib.HarmonyMethod(typeof(TimerIntegration).GetMethod(
-                        "RefreshPostfix", BindingFlags.Static | BindingFlags.NonPublic)));
-                harmony.Patch(draw,
-                    transpiler: new HarmonyLib.HarmonyMethod(typeof(TimerIntegration).GetMethod(
-                        "DrawTranspiler", BindingFlags.Static | BindingFlags.NonPublic)));
+                var register = registryType.GetMethod("Register", new[] { typeof(string), interfaceType });
+                if (register == null)
+                {
+                    Plugin.Logger.LogWarning($"PerspectiveSwitcher: {assemblyName}.SettingsPanelTabRegistry.Register(string, ISettingsPanelTab) not found.");
+                    return;
+                }
 
+                Type proxyType = BuildSettingsTabProxy(interfaceType);
+                if (proxyType == null) return;
+
+                object proxy = Activator.CreateInstance(proxyType);
+                object result = register.Invoke(registry, new[] { PluginInfo.PLUGIN_GUID, proxy });
+                if (!(result is bool ok) || !ok)
+                {
+                    Plugin.Logger.LogWarning($"PerspectiveSwitcher: {assemblyName} rejected settings panel tab registration (duplicate or invalid plugin GUID?).");
+                    return;
+                }
+
+                SubscribeToSettingsSaved(assemblyName, registryType, registry);
                 Enabled = true;
-                Plugin.Logger.LogInfo($"PerspectiveSwitcher: settings page integrated into {assemblyName} settings panel (last tab).");
+                Plugin.Logger.LogInfo($"PerspectiveSwitcher: settings page registered in {assemblyName} settings panel.");
             }
             catch (System.Exception ex)
             {
-                Plugin.Logger.LogWarning($"PerspectiveSwitcher: {assemblyName} settings panel integration failed: {ex.Message}");
+                Plugin.Logger.LogWarning($"PerspectiveSwitcher: {assemblyName} settings panel tab registration failed: {ex.Message}");
             }
         }
 
-        private static void RefreshPostfix(object __instance)
+        private static void SubscribeToSettingsSaved(string assemblyName, Type registryType, object registry)
         {
-            if (__instance == null || _tabDisplaysField == null) return;
-            var arr = _tabDisplaysField.GetValue(__instance) as string[];
-            if (arr == null || arr.Length != _baseTabCount) return;
-            Array.Resize(ref arr, _baseTabCount + 1);
-            arr[_baseTabCount] = L10n.T("PS_TITLE");
-            _tabDisplaysField.SetValue(__instance, arr);
-        }
-
-        private static IEnumerable<CodeInstruction> DrawTranspiler(IEnumerable<CodeInstruction> instructions)
-        {
-            var codes = new List<CodeInstruction>(instructions);
-            int switchIdx = -1;
-            for (int i = 0; i < codes.Count; i++)
+            try
             {
-                if (codes[i].opcode == OpCodes.Switch)
+                var ev = registryType.GetEvent("SettingsSaved", BindingFlags.Public | BindingFlags.Instance);
+                if (ev == null)
                 {
-                    switchIdx = i;
-                    break;
+                    Plugin.Logger.LogWarning($"PerspectiveSwitcher: {assemblyName} SettingsSaved event not found; settings persist on plugin/application quit only.");
+                    return;
                 }
+                var handler = new Action(SettingsTabBridge.SaveSettings);
+                ev.AddEventHandler(registry, handler);
+                _settingsSavedEvent = ev;
+                _registry = registry;
+                _settingsSavedHandler = handler;
             }
-            if (switchIdx < 0) return codes;
-
-            var skip = new Label();
-            var drawMethod = typeof(TimerIntegration).GetMethod("DrawOurControls", BindingFlags.Static | BindingFlags.NonPublic);
-            var insert = new List<CodeInstruction>
+            catch (System.Exception ex)
             {
-                new CodeInstruction(OpCodes.Ldarg_0),
-                new CodeInstruction(OpCodes.Ldfld, _tabField),
-                new CodeInstruction(OpCodes.Ldc_I4, _baseTabCount),
-                new CodeInstruction(OpCodes.Bne_Un_S, skip),
-                new CodeInstruction(OpCodes.Call, drawMethod),
-            };
-            if (codes[switchIdx].operand is int[] targets)
-            {
-                for (int i = 0; i < targets.Length; i++)
-                    if (targets[i] >= switchIdx) targets[i] += insert.Count;
+                Plugin.Logger.LogWarning($"PerspectiveSwitcher: failed to subscribe to {assemblyName} SettingsSaved: {ex.Message}");
             }
-            codes[switchIdx].labels.Add(skip);
-            codes.InsertRange(switchIdx, insert);
-            return codes;
         }
 
-        private static void DrawOurControls()
+        /// <summary>Unsubscribe from the host timer's SettingsSaved event when this plugin unloads.</summary>
+        public static void Unsubscribe()
+        {
+            try
+            {
+                if (_settingsSavedEvent != null && _registry != null && _settingsSavedHandler != null)
+                    _settingsSavedEvent.RemoveEventHandler(_registry, _settingsSavedHandler);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Logger.LogWarning($"PerspectiveSwitcher: failed to unsubscribe from SettingsSaved: {ex.Message}");
+            }
+            finally
+            {
+                _settingsSavedEvent = null;
+                _registry = null;
+                _settingsSavedHandler = null;
+            }
+        }
+
+        private static Type BuildSettingsTabProxy(Type interfaceType)
+        {
+            try
+            {
+                var asmName = new AssemblyName("PerspectiveSwitcher.SettingsTabProxy." + interfaceType.Assembly.GetName().Name);
+                AssemblyBuilder ab = AppDomain.CurrentDomain.DefineDynamicAssembly(asmName, AssemblyBuilderAccess.Run);
+                ModuleBuilder mb = ab.DefineDynamicModule("SettingsTabProxyModule");
+                TypeBuilder tb = mb.DefineType("SettingsTabProxy",
+                    TypeAttributes.Public | TypeAttributes.Sealed,
+                    typeof(object), new[] { interfaceType });
+
+                MethodInfo[] methods = interfaceType.GetMethods();
+                for (int i = 0; i < methods.Length; i++)
+                {
+                    MethodInfo mi = methods[i];
+                    ParameterInfo[] pars = mi.GetParameters();
+                    Type[] paramTypes = new Type[pars.Length];
+                    for (int p = 0; p < pars.Length; p++)
+                        paramTypes[p] = pars[p].ParameterType;
+
+                    MethodBuilder method = tb.DefineMethod(
+                        mi.Name,
+                        MethodAttributes.Public | MethodAttributes.Virtual | MethodAttributes.Final | MethodAttributes.NewSlot,
+                        mi.ReturnType, paramTypes);
+
+                    ILGenerator il = method.GetILGenerator();
+                    MethodInfo bridge;
+                    if (mi.Name == "get_Title")
+                        bridge = typeof(SettingsTabBridge).GetMethod("Title", BindingFlags.Public | BindingFlags.Static);
+                    else if (mi.Name == "Draw")
+                        bridge = typeof(SettingsTabBridge).GetMethod("Draw", BindingFlags.Public | BindingFlags.Static);
+                    else
+                        throw new System.NotSupportedException(
+                            "ISettingsPanelTab member '" + mi.Name + "' is not supported by this proxy.");
+                    il.Emit(OpCodes.Call, bridge);
+                    il.Emit(OpCodes.Ret);
+
+                    tb.DefineMethodOverride(method, mi);
+                }
+
+                return tb.CreateType();
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Logger.LogWarning($"PerspectiveSwitcher: failed to build settings panel tab proxy: {ex.Message}");
+                return null;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Public static bridge the runtime-emitted <c>ISettingsPanelTab</c> proxy
+    /// delegates to. Public is required: the proxy lives in a separate dynamic
+    /// assembly, so it may only call public members of this plugin's assembly.
+    /// </summary>
+    public static class SettingsTabBridge
+    {
+        public static string Title()
+        {
+            return L10n.T("PS_TITLE");
+        }
+
+        public static void Draw()
         {
             UiShared.EnsureStyles();
             UiShared.RebindCapture();
             UiShared.DrawControls();
+        }
+
+        /// <summary>Persist settings when the host timer saves (R9.3 SettingsSaved).</summary>
+        public static void SaveSettings()
+        {
+            PerspectiveSettings.Save();
         }
     }
 
