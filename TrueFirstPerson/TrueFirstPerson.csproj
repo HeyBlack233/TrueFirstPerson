@@ -1,95 +1,96 @@
-<?xml version="1.0" encoding="utf-8"?>
-<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
-  <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
+<Project Sdk="Microsoft.NET.Sdk">
+
   <PropertyGroup>
-    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
-    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
-    <ProjectGuid>{1B3F2C30-2187-418E-A1C4-B42B8FF62704}</ProjectGuid>
-    <OutputType>Library</OutputType>
-    <AppDesignerFolder>Properties</AppDesignerFolder>
-    <RootNamespace>TrueFirstPerson</RootNamespace>
+    <TargetFramework>netstandard2.0</TargetFramework>
     <AssemblyName>TrueFirstPerson</AssemblyName>
-    <TargetFrameworkVersion>v4.7.2</TargetFrameworkVersion>
-    <FileAlignment>512</FileAlignment>
-    <Deterministic>true</Deterministic>
+    <Product>TrueFirstPerson</Product>
+    <Version>1.0.1</Version>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>TrueFirstPerson</RootNamespace>
+    <NoStdLib>true</NoStdLib>
+    <DisableImplicitFrameworkReferences>true</DisableImplicitFrameworkReferences>
+    <RestoreSources></RestoreSources>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
   </PropertyGroup>
-  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
-    <DebugSymbols>true</DebugSymbols>
-    <DebugType>full</DebugType>
-    <Optimize>false</Optimize>
-    <OutputPath>bin\Debug\</OutputPath>
-    <DefineConstants>DEBUG;TRACE</DefineConstants>
-    <ErrorReport>prompt</ErrorReport>
-    <WarningLevel>4</WarningLevel>
-  </PropertyGroup>
-  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
-    <DebugType>pdbonly</DebugType>
-    <Optimize>true</Optimize>
-    <OutputPath>bin\Release\</OutputPath>
-    <DefineConstants>TRACE</DefineConstants>
-    <ErrorReport>prompt</ErrorReport>
-    <WarningLevel>4</WarningLevel>
-  </PropertyGroup>
+
+  <!-- Base class libraries from Unity Mono (net35-equivalent) -->
   <ItemGroup>
-    <Reference Include="0Harmony20">
-      <HintPath>D:\SteamLibrary\steamapps\common\Human Fall Flat\BepInEx\core\0Harmony20.dll</HintPath>
+    <Reference Include="mscorlib">
+      <HintPath>$(GAME_MANAGED)/mscorlib.dll</HintPath>
+      <Private>false</Private>
     </Reference>
-    <Reference Include="Assembly-CSharp">
-      <HintPath>D:\SteamLibrary\steamapps\common\Human Fall Flat\Human_Data\Managed\Assembly-CSharp.dll</HintPath>
+    <Reference Include="System">
+      <HintPath>$(GAME_MANAGED)/System.dll</HintPath>
+      <Private>false</Private>
     </Reference>
+    <Reference Include="System.Core">
+      <HintPath>$(GAME_MANAGED)/System.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="System.Xml">
+      <HintPath>$(GAME_MANAGED)/System.Xml.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- BepInEx & Harmony -->
+  <ItemGroup>
     <Reference Include="BepInEx">
-      <HintPath>D:\SteamLibrary\steamapps\common\Human Fall Flat\BepInEx\core\BepInEx.dll</HintPath>
+      <HintPath>$(BEPINEX_CORE)/BepInEx.dll</HintPath>
+      <Private>false</Private>
     </Reference>
     <Reference Include="BepInEx.Harmony">
-      <HintPath>D:\SteamLibrary\steamapps\common\Human Fall Flat\BepInEx\core\BepInEx.Harmony.dll</HintPath>
+      <HintPath>$(BEPINEX_CORE)/BepInEx.Harmony.dll</HintPath>
+      <Private>false</Private>
     </Reference>
-    <Reference Include="BepInEx.Preloader">
-      <HintPath>D:\SteamLibrary\steamapps\common\Human Fall Flat\BepInEx\core\BepInEx.Preloader.dll</HintPath>
+    <Reference Include="0Harmony">
+      <HintPath>$(BEPINEX_CORE)/0Harmony.dll</HintPath>
+      <Private>false</Private>
     </Reference>
-    <Reference Include="HarmonyXInterop">
-      <HintPath>D:\SteamLibrary\steamapps\common\Human Fall Flat\BepInEx\core\HarmonyXInterop.dll</HintPath>
+  </ItemGroup>
+
+  <!-- Game assemblies -->
+  <ItemGroup>
+    <Reference Include="Assembly-CSharp">
+      <HintPath>$(GAME_MANAGED)/Assembly-CSharp.dll</HintPath>
+      <Private>false</Private>
     </Reference>
     <Reference Include="HumanAPI">
-      <HintPath>D:\SteamLibrary\steamapps\common\Human Fall Flat\Human_Data\Managed\HumanAPI.dll</HintPath>
+      <HintPath>$(GAME_MANAGED)/HumanAPI.dll</HintPath>
+      <Private>false</Private>
     </Reference>
-    <Reference Include="Mono.Cecil">
-      <HintPath>D:\SteamLibrary\steamapps\common\Human Fall Flat\BepInEx\core\Mono.Cecil.dll</HintPath>
-    </Reference>
-    <Reference Include="Mono.Cecil.Mdb">
-      <HintPath>D:\SteamLibrary\steamapps\common\Human Fall Flat\BepInEx\core\Mono.Cecil.Mdb.dll</HintPath>
-    </Reference>
-    <Reference Include="Mono.Cecil.Pdb">
-      <HintPath>D:\SteamLibrary\steamapps\common\Human Fall Flat\BepInEx\core\Mono.Cecil.Pdb.dll</HintPath>
-    </Reference>
-    <Reference Include="Mono.Cecil.Rocks">
-      <HintPath>D:\SteamLibrary\steamapps\common\Human Fall Flat\BepInEx\core\Mono.Cecil.Rocks.dll</HintPath>
-    </Reference>
-    <Reference Include="MonoMod.RuntimeDetour">
-      <HintPath>D:\SteamLibrary\steamapps\common\Human Fall Flat\BepInEx\core\MonoMod.RuntimeDetour.dll</HintPath>
-    </Reference>
-    <Reference Include="MonoMod.Utils">
-      <HintPath>D:\SteamLibrary\steamapps\common\Human Fall Flat\BepInEx\core\MonoMod.Utils.dll</HintPath>
-    </Reference>
-    <Reference Include="System" />
+  </ItemGroup>
+
+  <!-- Unity engine modules (only what TrueFirstPerson uses) -->
+  <ItemGroup>
     <Reference Include="UnityEngine">
-      <HintPath>D:\SteamLibrary\steamapps\common\Human Fall Flat\Human_Data\Managed\UnityEngine.dll</HintPath>
+      <HintPath>$(GAME_MANAGED)/UnityEngine.dll</HintPath>
+      <Private>false</Private>
     </Reference>
     <Reference Include="UnityEngine.CoreModule">
-      <HintPath>D:\SteamLibrary\steamapps\common\Human Fall Flat\Human_Data\Managed\UnityEngine.CoreModule.dll</HintPath>
+      <HintPath>$(GAME_MANAGED)/UnityEngine.CoreModule.dll</HintPath>
+      <Private>false</Private>
     </Reference>
     <Reference Include="UnityEngine.IMGUIModule">
-      <HintPath>D:\SteamLibrary\steamapps\common\Human Fall Flat\Human_Data\Managed\UnityEngine.IMGUIModule.dll</HintPath>
+      <HintPath>$(GAME_MANAGED)/UnityEngine.IMGUIModule.dll</HintPath>
+      <Private>false</Private>
     </Reference>
     <Reference Include="UnityEngine.PhysicsModule">
-      <HintPath>D:\SteamLibrary\steamapps\common\Human Fall Flat\Human_Data\Managed\UnityEngine.PhysicsModule.dll</HintPath>
+      <HintPath>$(GAME_MANAGED)/UnityEngine.PhysicsModule.dll</HintPath>
+      <Private>false</Private>
     </Reference>
     <Reference Include="UnityEngine.TextRenderingModule">
-      <HintPath>D:\SteamLibrary\steamapps\common\Human Fall Flat\Human_Data\Managed\UnityEngine.TextRenderingModule.dll</HintPath>
+      <HintPath>$(GAME_MANAGED)/UnityEngine.TextRenderingModule.dll</HintPath>
+      <Private>false</Private>
     </Reference>
   </ItemGroup>
-  <ItemGroup>
-    <Compile Include="TrueFirstPerson.cs" />
-    <Compile Include="Properties\AssemblyInfo.cs" />
-  </ItemGroup>
-  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+
+  <!-- Keep the assembly identity as TrueFirstPerson, but also emit a
+       versioned filename for releases. -->
+  <Target Name="CopyVersionedDll" AfterTargets="Build">
+    <Copy SourceFiles="$(TargetPath)" DestinationFiles="$(TargetDir)TrueFirstPerson-v$(Version).dll" />
+    <Copy SourceFiles="$(TargetDir)$(TargetName).pdb" DestinationFiles="$(TargetDir)TrueFirstPerson-v$(Version).pdb" Condition="Exists('$(TargetDir)$(TargetName).pdb')" />
+  </Target>
+
 </Project>
