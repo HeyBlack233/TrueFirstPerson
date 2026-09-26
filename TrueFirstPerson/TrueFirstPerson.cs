@@ -322,6 +322,15 @@ namespace DouBai.PerspectiveSwitcher
             if (_mapHasOwnSwitcher) return;
             if (UiShared.IsRebinding) return;
             if (_fpsRuleLocked) return;
+            // Swallow the frame of leftover Input polling from a just-finished
+            // rebind so the newly bound key doesn't also toggle the camera.
+            if (UiShared.SuppressToggleAfterRebind())
+                return;
+            // A keyboard-capturing UI (dev console/Shell, net chat, the game's own
+            // rebind dialog) owns the keyboard while it is open; a toggle key typed
+            // into a text field must not also cycle the camera.
+            if (MenuSystem.keyboardState != KeyboardState.None)
+                return;
             if (Game.GetKeyDown(PerspectiveSettings.ToggleKey))
                 TogglePerspective();
         }
@@ -602,7 +611,22 @@ namespace DouBai.PerspectiveSwitcher
         private static string _smoothInput;
         private static bool _fovEditing;
         private static bool _smoothEditing;
+        private static KeyCode _reboundKey = KeyCode.None;
+        private static int _suppressToggleFrame = -1;
         public static bool IsRebinding => _rebinding;
+
+        /// <summary>
+        /// True for the frame after a rebind capture. Unity polls
+        /// <see cref="Input.GetKeyDown"/> one frame later than IMGUI delivers the
+        /// KeyDown event that captured the new key, so without this the key just
+        /// bound would also toggle the perspective once.
+        /// </summary>
+        public static bool SuppressToggleAfterRebind()
+        {
+            return _suppressToggleFrame >= 0
+                && Time.frameCount <= _suppressToggleFrame
+                && _reboundKey == PerspectiveSettings.ToggleKey;
+        }
 
         public static void EnsureStyles()
         {
@@ -633,6 +657,8 @@ namespace DouBai.PerspectiveSwitcher
                 if (!IsModifier(pressed))
                 {
                     PerspectiveSettings.ToggleKey = pressed;
+                    _reboundKey = pressed;
+                    _suppressToggleFrame = Time.frameCount + 1;
                     _rebinding = false;
                     Event.current.Use();
                 }
@@ -707,7 +733,7 @@ namespace DouBai.PerspectiveSwitcher
             bool clicked = TimerIntegration.Enabled
                 ? GUILayout.Button(btn, Button, GUILayout.Width(120))
                 : GUILayout.Button(btn, Button, GUILayout.Width(120), GUILayout.Height(25));
-            if (clicked && Event.current.isMouse)
+            if (clicked)
                 _rebinding = !_rebinding;
             GUILayout.Space(16);
             GUILayout.EndHorizontal();
@@ -730,6 +756,8 @@ namespace DouBai.PerspectiveSwitcher
         private void Update()
         {
             if (TimerIntegration.Enabled) return;
+            // Don't steal the key while a text field (dev console/chat) has focus.
+            if (MenuSystem.keyboardState != KeyboardState.None) return;
             if (Game.GetKeyDown(PerspectiveSettings.UiToggleKey))
             {
                 _visible = !_visible;
